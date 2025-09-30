@@ -588,7 +588,8 @@ async def reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             daily_goal_enabled=1 if not settings['daily_goal_enabled'] else 0
         )
 
-    elif query.data == CB_REMINDERS_SETTINGS:
+    # Показываем обновленные настройки после любого изменения
+    await reminders_command(query.message, context)
         # Показываем меню настройки времени
         keyboard = [
             [
@@ -646,10 +647,6 @@ async def reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"📊 <b>Текущее значение: {time_name}</b>\n\n"
             f"Нажмите на кнопку \"Установить {time_name}\" для изменения значения."
         )
-
-    else:
-        # Показываем обновленные настройки
-        await reminders_command(query.message, context)
 
 async def handle_reminder_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик ввода нового значения времени напоминаний."""
