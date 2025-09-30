@@ -48,7 +48,7 @@ class Database:
                 )
             ''')
             
-            # Создаем таблицу заметок
+            # Создаем таблицу заметок (если не существует)
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS notes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +61,20 @@ class Database:
                     FOREIGN KEY (session_id) REFERENCES sessions (id)
                 )
             ''')
+
+            # Проверяем и добавляем колонку category, если она отсутствует
+            cursor = await db.execute("PRAGMA table_info(notes)")
+            columns = await cursor.fetchall()
+            column_names = [col[1] for col in columns]
+
+            if 'category' not in column_names:
+                print("Добавляем колонку category в таблицу notes...")
+                await db.execute('ALTER TABLE notes ADD COLUMN category TEXT DEFAULT "Общее"')
+                print("Колонка category успешно добавлена в таблицу notes")
+
+                # Обновляем существующие записи, чтобы они имели значение по умолчанию
+                await db.execute('UPDATE notes SET category = "Общее" WHERE category IS NULL')
+                print("Обновлены существующие записи в таблице notes")
             
             # Создаем таблицу перерывов
             await db.execute('''
