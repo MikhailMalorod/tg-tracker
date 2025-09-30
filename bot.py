@@ -770,8 +770,13 @@ async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     elif data.startswith("calendar_month_"):
         # Переход к другому месяцу
-        _, year, month = data.split("_")
-        await show_calendar_month(query.message, query.from_user.id, int(year), int(month))
+        parts = data.split("_")
+        if len(parts) >= 4:
+            year, month = parts[2], parts[3]
+            await show_calendar_month(query.message, query.from_user.id, int(year), int(month))
+        else:
+            await query.edit_message_text("❌ Ошибка формата месяца календаря")
+            return
 
     elif data.startswith("calendar_day_"):
         # Показываем статистику за выбранный день
