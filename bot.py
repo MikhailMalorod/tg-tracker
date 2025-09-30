@@ -621,8 +621,82 @@ async def reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
+    elif query.data.startswith("set_"):
+        # Обработка кнопок установки времени
+        time_type = query.data.replace("set_", "").replace("_time", "_reminder_minutes")
+
+        # Сохраняем тип времени в контексте для последующей обработки
+        context.user_data["setting_reminder_time"] = time_type
+        context.user_data["is_callback"] = True
+
+        await query.edit_message_text(
+            f"⏰ Введите новое значение для {query.data.replace('set_', '').replace('_time', '').replace('_', ' ')} (в минутах):"
+        )
+
+    elif query.data == "back_to_reminders":
+        # Возврат к главному меню напоминаний
+        await reminders_command(query.message, context)
+
+    elif query.data.endswith("_current"):
+        # Обработка кнопок текущих значений времени - показываем инструкцию
+        time_type = query.data.replace("_current", "").replace("_time", "_reminder_minutes")
+        time_name = query.data.replace("_time_current", "").replace("_", " ").title()
+
+        await query.edit_message_text(
+            f"📊 <b>Текущее значение: {time_name}</b>\n\n"
+            f"Нажмите на кнопку \"Установить {time_name}\" для изменения значения."
+        )
+
+    else:
         # Показываем обновленные настройки
         await reminders_command(query.message, context)
+
+async def handle_reminder_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик ввода нового значения времени напоминаний."""
+    user = update.effective_user
+
+    # Проверяем, что пользователь устанавливает время напоминаний
+    if not context.user_data.get("setting_reminder_time"):
+        # Если не в режиме установки времени, передаем обработку заметкам
+        await save_note(update, context)
+        return
+
+    try:
+        # Получаем введенное значение
+        minutes_str = update.message.text.strip()
+        minutes = int(minutes_str)
+
+        # Проверяем границы значений
+        if minutes < 1 or minutes > 10080:  # Максимум неделя в минутах
+            await update.message.reply_text(
+                "❌ Неверное значение! Введите число от 1 до 10080 (максимум неделя в минутах)."
+            )
+            return
+
+        # Получаем тип времени из контекста
+        time_type = context.user_data["setting_reminder_time"]
+
+        # Обновляем настройки в базе данных
+        await Database.update_reminder_settings(user.id, **{time_type: minutes})
+
+        # Очищаем контекст
+        context.user_data.pop("setting_reminder_time", None)
+        context.user_data.pop("is_callback", None)
+
+        # Показываем обновленные настройки
+        await update.message.reply_text(
+            f"✅ Время напоминаний обновлено!\n"
+            f"Отправьте /reminders для просмотра настроек."
+        )
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Неверный формат! Введите число минут (например: 60)."
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Ошибка при обновлении настроек: {str(e)}"
+        )
 
 async def calendar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /calendar для просмотра календаря работы."""
@@ -1428,6 +1502,9 @@ def main() -> None:
     
     # Обработчик для текстовых сообщений (заметки)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_note))
+
+    # Обработчик для ввода времени напоминаний
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reminder_time_input))
     
     # Обработчик для инлайн кнопок (должен быть последним)
     application.add_handler(CallbackQueryHandler(button_handler))
