@@ -56,6 +56,7 @@ class Database:
                     session_id INTEGER,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     content TEXT,
+                    category TEXT DEFAULT 'Общее',
                     FOREIGN KEY (user_id) REFERENCES users (user_id),
                     FOREIGN KEY (session_id) REFERENCES sessions (id)
                 )
@@ -75,7 +76,41 @@ class Database:
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
-            
+
+            # Создаем таблицу настроек напоминаний
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS reminder_settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    work_reminder_enabled BOOLEAN DEFAULT 1,
+                    work_reminder_minutes INTEGER DEFAULT 60,
+                    break_reminder_enabled BOOLEAN DEFAULT 1,
+                    break_reminder_minutes INTEGER DEFAULT 15,
+                    long_break_reminder_enabled BOOLEAN DEFAULT 1,
+                    long_break_reminder_minutes INTEGER DEFAULT 120,
+                    daily_goal_enabled BOOLEAN DEFAULT 0,
+                    daily_goal_minutes INTEGER DEFAULT 480,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id),
+                    UNIQUE(user_id)
+                )
+            ''')
+
+            # Создаем таблицу отправленных напоминаний
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS sent_reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    reminder_type TEXT,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    session_id INTEGER,
+                    message_id INTEGER,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id),
+                    FOREIGN KEY (session_id) REFERENCES sessions (id)
+                )
+            ''')
+
             await db.commit()
     
     @staticmethod
@@ -182,25 +217,25 @@ class Database:
                 return dict(session) if session else None
     
     @staticmethod
-    async def add_note(user_id: int, content: str, session_id: Optional[int] = None) -> int:
+    async def add_note(user_id: int, content: str, session_id: Optional[int] = None, category: str = "Общее") -> int:
         """Добавление заметки. Если session_id не указан, пытаемся найти активную сессию."""
         async with aiosqlite.connect(DATABASE_PATH) as db:
             # Если ID сессии не указан, пробуем найти активную
             if session_id is None:
                 db.row_factory = aiosqlite.Row
                 async with db.execute(
-                    'SELECT id FROM sessions WHERE user_id = ? AND status = ?', 
+                    'SELECT id FROM sessions WHERE user_id = ? AND status = ?',
                     (user_id, SESSION_STATUS["ACTIVE"])
                 ) as cursor:
                     active_session = await cursor.fetchone()
                     session_id = active_session["id"] if active_session else None
-            
+
             # Добавляем заметку
             cursor = await db.execute('''
-                INSERT INTO notes (user_id, session_id, content)
-                VALUES (?, ?, ?)
-            ''', (user_id, session_id, content))
-            
+                INSERT INTO notes (user_id, session_id, content, category)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, session_id, content, category))
+
             note_id = cursor.lastrowid
             await db.commit()
             return note_id
@@ -343,8 +378,8 @@ class Database:
             db.row_factory = aiosqlite.Row
             
             query = '''
-                SELECT n.id, n.content, n.timestamp, 
-                       s.category, s.start_time, s.status 
+                SELECT n.id, n.content, n.timestamp, n.category,
+                       s.category as session_category, s.start_time, s.status
                 FROM notes n
                 JOIN sessions s ON n.session_id = s.id
                 WHERE n.user_id = ?
@@ -367,12 +402,12 @@ class Database:
             
             notes = []
             async with db.execute(
-                'SELECT * FROM notes WHERE session_id = ? ORDER BY timestamp ASC', 
+                'SELECT * FROM notes WHERE session_id = ? ORDER BY timestamp ASC',
                 (session_id,)
             ) as cursor:
                 async for row in cursor:
                     notes.append(dict(row))
-            
+
             return notes
             
     @staticmethod
@@ -570,3 +605,313 @@ class Database:
                     monthly_summary["break_duration"] += break_item["duration"]
         
         return monthly_summary
+
+    @staticmethod
+    async def export_user_data_to_csv(user_id: int, file_path: str) -> bool:
+        """Экспорт всех данных пользователя в CSV файл."""
+        import csv
+
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                db.row_factory = aiosqlite.Row
+
+                # Получаем данные пользователя
+                async with db.execute('SELECT * FROM users WHERE user_id = ?', (user_id,)) as cursor:
+                    user = await cursor.fetchone()
+
+                if not user:
+                    return False
+
+                user_dict = dict(user)
+
+                # Получаем все сессии пользователя
+                sessions_query = '''
+                    SELECT s.*, u.first_name, u.last_name
+                    FROM sessions s
+                    JOIN users u ON s.user_id = u.user_id
+                    WHERE s.user_id = ?
+                    ORDER BY s.start_time DESC
+                '''
+
+                async with db.execute(sessions_query, (user_id,)) as cursor:
+                    sessions = [dict(row) for row in await cursor.fetchall()]
+
+                # Получаем все заметки пользователя
+                notes_query = '''
+                    SELECT n.*, s.category as session_category
+                    FROM notes n
+                    JOIN sessions s ON n.session_id = s.id
+                    WHERE n.user_id = ?
+                    ORDER BY n.timestamp DESC
+                '''
+
+                async with db.execute(notes_query, (user_id,)) as cursor:
+                    notes = [dict(row) for row in await cursor.fetchall()]
+
+                # Получаем все перерывы пользователя
+                breaks_query = '''
+                    SELECT b.*, s.category as session_category
+                    FROM breaks b
+                    JOIN sessions s ON b.session_id = s.id
+                    WHERE b.user_id = ?
+                    ORDER BY b.start_time DESC
+                '''
+
+                async with db.execute(breaks_query, (user_id,)) as cursor:
+                    breaks = [dict(row) for row in await cursor.fetchall()]
+
+            # Создаем CSV файл с тремя листами
+            with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+
+                # Лист 1: Информация о пользователе
+                writer.writerow(['ЛИСТ 1: ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ'])
+                writer.writerow(['ID пользователя', 'Имя', 'Фамилия', 'Username'])
+                writer.writerow([
+                    user_dict['user_id'],
+                    user_dict['first_name'] or '',
+                    user_dict['last_name'] or '',
+                    user_dict['username'] or ''
+                ])
+                writer.writerow([])  # Пустая строка
+
+                # Лист 2: Рабочие сессии
+                writer.writerow(['ЛИСТ 2: РАБОЧИЕ СЕССИИ'])
+                writer.writerow([
+                    'ID сессии', 'Дата начала', 'Дата окончания',
+                    'Продолжительность (сек)', 'Категория', 'Статус'
+                ])
+
+                for session in sessions:
+                    writer.writerow([
+                        session['id'],
+                        session['start_time'],
+                        session['end_time'] or '',
+                        session['duration'] or 0,
+                        session['category'],
+                        session['status']
+                    ])
+                writer.writerow([])  # Пустая строка
+
+                # Лист 3: Заметки
+                writer.writerow(['ЛИСТ 3: ЗАМЕТКИ'])
+                writer.writerow([
+                    'ID заметки', 'Текст заметки', 'Дата создания',
+                    'Категория сессии'
+                ])
+
+                for note in notes:
+                    writer.writerow([
+                        note['id'],
+                        note['content'],
+                        note['timestamp'],
+                        note['session_category']
+                    ])
+                writer.writerow([])  # Пустая строка
+
+                # Лист 4: Перерывы
+                writer.writerow(['ЛИСТ 4: ПЕРЕРЫВЫ'])
+                writer.writerow([
+                    'ID перерыва', 'ID сессии', 'Дата начала', 'Дата окончания',
+                    'Продолжительность (сек)', 'Причина'
+                ])
+
+                for break_item in breaks:
+                    writer.writerow([
+                        break_item['id'],
+                        break_item['session_id'],
+                        break_item['start_time'],
+                        break_item['end_time'] or '',
+                        break_item['duration'] or 0,
+                        break_item['reason']
+                    ])
+
+            return True
+
+        except Exception as e:
+            print(f"Ошибка при экспорте данных: {e}")
+            return False
+
+    @staticmethod
+    async def export_sessions_to_csv(user_id: int, start_date: str = None, end_date: str = None, file_path: str = None) -> bool:
+        """Экспорт сессий пользователя в CSV за указанный период."""
+        import csv
+
+        try:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                db.row_factory = aiosqlite.Row
+
+                # Базовый запрос
+                query = '''
+                    SELECT s.*, u.first_name, u.last_name
+                    FROM sessions s
+                    JOIN users u ON s.user_id = u.user_id
+                    WHERE s.user_id = ?
+                '''
+
+                params = [user_id]
+
+                # Добавляем фильтры по датам, если указаны
+                if start_date:
+                    query += ' AND s.start_time >= ?'
+                    params.append(start_date)
+
+                if end_date:
+                    query += ' AND s.start_time <= ?'
+                    params.append(end_date)
+
+                query += ' ORDER BY s.start_time DESC'
+
+                async with db.execute(query, params) as cursor:
+                    sessions = [dict(row) for row in await cursor.fetchall()]
+
+            # Создаем CSV файл
+            if not file_path:
+                import tempfile
+                import os
+                temp_dir = tempfile.gettempdir()
+                file_path = os.path.join(temp_dir, f'sessions_{user_id}_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.csv')
+
+            with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+
+                # Заголовок
+                writer.writerow(['ОТЧЕТ ПО РАБОЧИМ СЕССИЯМ'])
+                writer.writerow([f'Пользователь ID: {user_id}'])
+                if start_date and end_date:
+                    writer.writerow([f'Период: с {start_date} по {end_date}'])
+                writer.writerow([])  # Пустая строка
+
+                # Заголовки колонок
+                writer.writerow([
+                    'Дата', 'Время начала', 'Время окончания',
+                    'Продолжительность', 'Категория', 'Статус'
+                ])
+
+                # Данные сессий
+                total_duration = 0
+                for session in sessions:
+                    start_time = datetime.datetime.fromisoformat(session['start_time'])
+                    end_time_str = session['end_time'] if session['end_time'] else 'Не завершена'
+
+                    if session['end_time']:
+                        end_time = datetime.datetime.fromisoformat(session['end_time'])
+                        duration = session['duration']
+                        total_duration += duration
+                    else:
+                        duration = 'Не завершена'
+
+                    writer.writerow([
+                        start_time.strftime('%Y-%m-%d'),
+                        start_time.strftime('%H:%M:%S'),
+                        end_time_str,
+                        duration,
+                        session['category'],
+                        session['status']
+                    ])
+
+                writer.writerow([])  # Пустая строка
+
+                # Итоговая статистика
+                writer.writerow(['ИТОГО:'])
+                if sessions:
+                    hours, remainder = divmod(total_duration, 3600)
+                    minutes, seconds = divmod(remainder, 60)
+                    writer.writerow([f'Общее время работы: {hours}ч {minutes}м {seconds}с'])
+                    writer.writerow([f'Количество сессий: {len(sessions)}'])
+
+            return True
+
+        except Exception as e:
+            print(f"Ошибка при экспорте сессий: {e}")
+            return False
+
+    @staticmethod
+    async def get_reminder_settings(user_id: int) -> Dict[str, Any]:
+        """Получение настроек напоминаний пользователя."""
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+
+            async with db.execute(
+                'SELECT * FROM reminder_settings WHERE user_id = ?',
+                (user_id,)
+            ) as cursor:
+                settings = await cursor.fetchone()
+
+            if settings:
+                return dict(settings)
+            else:
+                # Возвращаем настройки по умолчанию
+                return {
+                    'user_id': user_id,
+                    'work_reminder_enabled': 1,
+                    'work_reminder_minutes': 60,
+                    'break_reminder_enabled': 1,
+                    'break_reminder_minutes': 15,
+                    'long_break_reminder_enabled': 1,
+                    'long_break_reminder_minutes': 120,
+                    'daily_goal_enabled': 0,
+                    'daily_goal_minutes': 480
+                }
+
+    @staticmethod
+    async def update_reminder_settings(user_id: int, **settings) -> None:
+        """Обновление настроек напоминаний пользователя."""
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            # Проверяем, существуют ли настройки пользователя
+            async with db.execute(
+                'SELECT id FROM reminder_settings WHERE user_id = ?',
+                (user_id,)
+            ) as cursor:
+                existing = await cursor.fetchone()
+
+            if existing:
+                # Обновляем существующие настройки
+                set_parts = []
+                values = []
+                for key, value in settings.items():
+                    set_parts.append(f'{key} = ?')
+                    values.append(value)
+
+                values.append(user_id)
+
+                query = f'UPDATE reminder_settings SET {", ".join(set_parts)}, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?'
+                await db.execute(query, values)
+            else:
+                # Создаем новые настройки
+                columns = ['user_id'] + list(settings.keys())
+                placeholders = ['?'] * len(columns)
+                values = [user_id] + list(settings.values())
+
+                query = f'INSERT INTO reminder_settings ({", ".join(columns)}) VALUES ({", ".join(placeholders)})'
+                await db.execute(query, values)
+
+            await db.commit()
+
+    @staticmethod
+    async def log_sent_reminder(user_id: int, reminder_type: str, session_id: int = None, message_id: int = None) -> None:
+        """Запись отправленного напоминания."""
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute(
+                'INSERT INTO sent_reminders (user_id, reminder_type, session_id, message_id) VALUES (?, ?, ?, ?)',
+                (user_id, reminder_type, session_id, message_id)
+            )
+            await db.commit()
+
+    @staticmethod
+    async def get_last_reminder_time(user_id: int, reminder_type: str) -> datetime.datetime:
+        """Получение времени последнего отправленного напоминания указанного типа."""
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+
+            async with db.execute(
+                'SELECT sent_at FROM sent_reminders WHERE user_id = ? AND reminder_type = ? ORDER BY sent_at DESC LIMIT 1',
+                (user_id, reminder_type)
+            ) as cursor:
+                reminder = await cursor.fetchone()
+
+            if reminder:
+                return datetime.datetime.fromisoformat(reminder['sent_at'])
+            else:
+                # Если напоминаний не было, возвращаем время далеко в прошлом
+                return datetime.datetime.min
