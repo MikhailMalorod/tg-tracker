@@ -1,0 +1,24 @@
+# Byte-compiled / оптимизированные / DLL файлы
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Файлы виртуальной среды
+venv/
+env/
+ENV/
+
+# Файлы настроек окружения
+.env
+
+# База данных SQLite
+*.db
+
+# Логи
+*.log
+
+# Локальные файлы IDE
+.idea/
+.vscode/
+*.swp
+*.swo
