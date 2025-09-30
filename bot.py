@@ -590,6 +590,8 @@ async def reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # Показываем обновленные настройки после любого изменения
     await reminders_command(query.message, context)
+
+    elif query.data == CB_REMINDERS_SETTINGS:
         # Показываем меню настройки времени
         keyboard = [
             [
