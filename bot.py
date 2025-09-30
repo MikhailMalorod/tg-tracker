@@ -16,7 +16,13 @@ from telegram.ext import (
 
 import aiosqlite
 from database import Database, SESSION_STATUS
-from config import TELEGRAM_BOT_TOKEN
+from config import (
+    TELEGRAM_BOT_TOKEN,
+    get_work_categories,
+    get_note_categories,
+    reload_categories,
+    get_categories_info
+)
 
 # Настройка логирования
 logging.basicConfig(
@@ -52,11 +58,8 @@ CB_DAILY_GOAL_TOGGLE = "daily_goal_toggle"
 # Callback данные для календаря
 CB_CALENDAR_DAY = "calendar_day_"
 
-# Категории работы
-WORK_CATEGORIES = ["Разработка", "Совещания", "Документация", "Обучение", "Другое"]
-
-# Категории заметок
-NOTE_CATEGORIES = ["Общее", "Идея", "Задача", "Проблема", "Встреча", "Личное"]
+# Категории загружаются динамически из config.py
+# WORK_CATEGORIES и NOTE_CATEGORIES теперь получаются через функции get_work_categories() и get_note_categories()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start."""
@@ -120,7 +123,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/stats - Статистика рабочего времени\n"
         "/export - Экспорт данных в CSV\n"
         "/reminders - Настройки напоминаний\n"
-        "/calendar - Календарь работы",
+        "/calendar - Календарь работы\n"
+        "/categories - Управление категориями",
         reply_markup=reply_markup
     )
 
@@ -177,8 +181,9 @@ async def start_work_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
     
     # Создаем клавиатуру с категориями работы
+    work_categories = get_work_categories()
     keyboard = []
-    for category in WORK_CATEGORIES:
+    for category in work_categories:
         keyboard.append([InlineKeyboardButton(category, callback_data=f"category_{category}")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -378,8 +383,9 @@ async def note_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data["is_callback"] = False
 
     # Создаем клавиатуру с категориями заметок
+    note_categories = get_note_categories()
     keyboard = []
-    for category in NOTE_CATEGORIES:
+    for category in note_categories:
         keyboard.append([InlineKeyboardButton(category, callback_data=f"note_category_{category}")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -635,6 +641,37 @@ async def calendar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Показываем календарь на текущий месяц
     await show_calendar_month(update.message, user.id)
 
+async def categories_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /categories для управления категориями."""
+    user = update.effective_user
+
+    # Получаем информацию о категориях
+    categories_info = get_categories_info()
+
+    # Создаем клавиатуру для управления категориями
+    keyboard = [
+        [InlineKeyboardButton("📋 Показать категории", callback_data="show_categories")],
+        [InlineKeyboardButton("🔄 Перезагрузить категории", callback_data="reload_categories")],
+        [InlineKeyboardButton("✏️ Редактировать категории", callback_data="edit_categories")]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Создаем сообщение с информацией о категориях
+    message_text = (
+        "📂 <b>Управление категориями</b>\n\n"
+        f"📋 Категорий работы: {len(categories_info['work_categories'])}\n"
+        f"📝 Категорий заметок: {len(categories_info['note_categories'])}\n"
+        f"📁 Файл конфигурации: {categories_info['file_path']}\n\n"
+        "Используйте кнопки ниже для управления категориями."
+    )
+
+    await update.message.reply_text(
+        message_text,
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
 async def show_calendar_month(message, user_id: int, year: int = None, month: int = None) -> None:
     """Показывает календарь на указанный месяц."""
     if year is None or month is None:
@@ -788,6 +825,61 @@ async def show_day_stats(query, stats: Dict[str, Any]) -> None:
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
+
+async def categories_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик нажатий на кнопки управления категориями."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "show_categories":
+        # Показываем текущие категории
+        categories_info = get_categories_info()
+
+        message_text = (
+            "📋 <b>Текущие категории</b>\n\n"
+            "<b>Категории работы:</b>\n"
+            f"{', '.join(f'• {cat}' for cat in categories_info['work_categories'])}\n\n"
+            "<b>Категории заметок:</b>\n"
+            f"{', '.join(f'• {cat}' for cat in categories_info['note_categories'])}\n\n"
+            f"📁 Загружено из: {categories_info['file_path']}\n"
+            f"🕐 Последняя загрузка: {categories_info['last_load_time'][:19]}"
+        )
+
+        await query.edit_message_text(
+            text=message_text,
+            parse_mode="HTML"
+        )
+
+    elif query.data == "reload_categories":
+        # Перезагружаем категории из файла
+        reload_result = reload_categories()
+
+        if reload_result.get('loaded_from_file'):
+            message_text = "✅ Категории успешно перезагружены из файла"
+        else:
+            message_text = "❌ Не удалось перезагрузить категории из файла"
+
+        await query.edit_message_text(
+            text=message_text
+        )
+
+    elif query.data == "edit_categories":
+        # Показываем инструкцию по редактированию файла
+        message_text = (
+            "✏️ <b>Редактирование категорий</b>\n\n"
+            "Для изменения категорий отредактируйте файл <code>categories.json</code>\n\n"
+            "<b>Структура файла:</b>\n"
+            "<code>{\n"
+            '  "work_categories": ["Разработка", "Совещания", "Документация"],\n'
+            '  "note_categories": ["Общее", "Идея", "Задача"]\n'
+            "}</code>\n\n"
+            "После редактирования используйте команду <code>/categories</code> → <code>Перезагрузить категории</code>"
+        )
+
+        await query.edit_message_text(
+            text=message_text,
+            parse_mode="HTML"
+        )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /stats для просмотра статистики."""
@@ -1199,8 +1291,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data["is_callback"] = True
 
         # Создаем клавиатуру с категориями заметок
+        note_categories = get_note_categories()
         keyboard = []
-        for category in NOTE_CATEGORIES:
+        for category in note_categories:
             keyboard.append([InlineKeyboardButton(category, callback_data=f"note_category_{category}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1302,6 +1395,7 @@ def main() -> None:
     application.add_handler(CommandHandler("export", export_command))
     application.add_handler(CommandHandler("reminders", reminders_command))
     application.add_handler(CommandHandler("calendar", calendar_command))
+    application.add_handler(CommandHandler("categories", categories_command))
     application.add_handler(CommandHandler("start_work", start_work_command))
     
     # Обработчик для выбора категорий работы
@@ -1318,6 +1412,9 @@ def main() -> None:
 
     # Обработчик для календаря
     application.add_handler(CallbackQueryHandler(calendar_callback, pattern=r"^calendar_"))
+
+    # Обработчик для управления категориями
+    application.add_handler(CallbackQueryHandler(categories_callback, pattern=r"^show_categories|reload_categories|edit_categories"))
     
     # Обработчик для текстовых сообщений (заметки)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_note))
@@ -1328,18 +1425,38 @@ def main() -> None:
     # Запускаем бота
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-    # Запускаем фоновую задачу для напоминаний
+    # Запускаем фоновые задачи
     asyncio.create_task(reminder_scheduler(application.bot))
+    asyncio.create_task(categories_monitor())
 
 async def reminder_scheduler(bot) -> None:
     """Фоновая задача для отправки напоминаний."""
     while True:
         try:
             await check_and_send_reminders(bot)
-            await asyncio.sleep(60)  # Проверяем каждую минуту
+            await asyncio.sleep(60)  # Проверяем каждые 60 секунд
         except Exception as e:
             logger.error(f"Ошибка в планировщике напоминаний: {e}")
             await asyncio.sleep(60)
+
+async def categories_monitor() -> None:
+    """Фоновая задача для мониторинга изменений файла категорий."""
+    while True:
+        try:
+            # Проверяем изменения файла categories.json каждые 5 минут
+            await asyncio.sleep(300)  # 5 минут
+
+            # Принудительно перезагружаем категории
+            reload_result = reload_categories()
+
+            if reload_result.get('loaded_from_file') and not reload_result.get('file_unchanged', False):
+                logger.info("Файл categories.json изменен, категории перезагружены")
+            elif reload_result.get('error'):
+                logger.warning(f"Ошибка при мониторинге categories.json: {reload_result.get('error')}")
+
+        except Exception as e:
+            logger.error(f"Ошибка в мониторинге категорий: {e}")
+            await asyncio.sleep(300)
 
 async def check_and_send_reminders(bot) -> None:
     """Проверка и отправка напоминаний пользователям."""
