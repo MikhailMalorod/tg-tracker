@@ -656,10 +656,16 @@ async def handle_reminder_time_input(update: Update, context: ContextTypes.DEFAU
     user = update.effective_user
 
     # Проверяем, что пользователь устанавливает время напоминаний
-    if not context.user_data.get("setting_reminder_time"):
+    if context.user_data.get("setting_reminder_time"):
+        # Обрабатываем ввод времени напоминаний
+        await _process_reminder_time_input(update, context)
+    else:
         # Если не в режиме установки времени, передаем обработку заметкам
         await save_note(update, context)
-        return
+
+async def _process_reminder_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Внутренняя функция для обработки ввода времени напоминаний."""
+    user = update.effective_user
 
     try:
         # Получаем введенное значение
@@ -1500,11 +1506,11 @@ def main() -> None:
     # Обработчик для управления категориями
     application.add_handler(CallbackQueryHandler(categories_callback, pattern=r"^show_categories|reload_categories|edit_categories"))
     
+    # Обработчик для ввода времени напоминаний (должен быть первым)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reminder_time_input))
+
     # Обработчик для текстовых сообщений (заметки)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_note))
-
-    # Обработчик для ввода времени напоминаний
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reminder_time_input))
     
     # Обработчик для инлайн кнопок (должен быть последним)
     application.add_handler(CallbackQueryHandler(button_handler))
