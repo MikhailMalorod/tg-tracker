@@ -589,7 +589,7 @@ async def reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
     # Показываем обновленные настройки после любого изменения
-    await reminders_command(query.message, context)
+    await reminders_command(update, context)
 
     elif query.data == CB_REMINDERS_SETTINGS:
         # Показываем меню настройки времени
@@ -638,7 +638,7 @@ async def reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif query.data == "back_to_reminders":
         # Возврат к главному меню напоминаний
-        await reminders_command(query.message, context)
+        await reminders_command(update, context)
 
     elif query.data.endswith("_current"):
         # Обработка кнопок текущих значений времени - показываем инструкцию
