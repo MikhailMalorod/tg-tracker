@@ -764,7 +764,7 @@ async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     data = query.data
 
-    if data == "calendar_today":
+    if data == "calendar_today" or data == "calendar_show":
         # Показываем календарь на текущий месяц
         await show_calendar_month(query.message, query.from_user.id)
 
@@ -775,8 +775,13 @@ async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     elif data.startswith("calendar_day_"):
         # Показываем статистику за выбранный день
-        _, year, month, day = data.split("_")
-        selected_date = datetime.date(int(year), int(month), int(day))
+        parts = data.split("_")
+        if len(parts) >= 4:
+            year, month, day = parts[2], parts[3], parts[4]
+            selected_date = datetime.date(int(year), int(month), int(day))
+        else:
+            await query.edit_message_text("❌ Ошибка формата даты календаря")
+            return
 
         stats = await Database.get_daily_stats(query.from_user.id, selected_date)
         await show_day_stats(query, stats)
